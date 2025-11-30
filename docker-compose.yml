@@ -11,5 +11,7 @@ services:
     restart: "on-failure"
     ports:
       - "3000:3000"
+      - "8080:8080"
+      - "8081:8081"
     env_file:
       - src/.env
