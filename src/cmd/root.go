@@ -5,15 +5,17 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
-	"go.mau.fi/whatsmeow/store/sqlstore"
 	"os"
 	"strings"
 	"time"
+
+	"go.mau.fi/whatsmeow/store/sqlstore"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
 	domainApp "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/app"
 	domainChat "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chat"
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
+	domainDevice "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/device"
 	domainGroup "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/group"
 	domainMessage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/message"
 	domainNewsletter "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/newsletter"
@@ -50,6 +52,7 @@ var (
 	messageUsecase    domainMessage.IMessageUsecase
 	groupUsecase      domainGroup.IGroupUsecase
 	newsletterUsecase domainNewsletter.INewsletterUsecase
+	deviceUsecase     domainDevice.IDeviceUsecase
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -80,6 +83,9 @@ func initEnvConfig() {
 	// Application settings
 	if envPort := viper.GetString("app_port"); envPort != "" {
 		config.AppPort = envPort
+	}
+	if envHost := viper.GetString("app_host"); envHost != "" {
+		config.AppHost = envHost
 	}
 	if envDebug := viper.GetBool("app_debug"); envDebug {
 		config.AppDebug = envDebug
@@ -127,8 +133,45 @@ func initEnvConfig() {
 	if viper.IsSet("whatsapp_webhook_insecure_skip_verify") {
 		config.WhatsappWebhookInsecureSkipVerify = viper.GetBool("whatsapp_webhook_insecure_skip_verify")
 	}
+	if envWebhookEvents := viper.GetString("whatsapp_webhook_events"); envWebhookEvents != "" {
+		events := strings.Split(envWebhookEvents, ",")
+		config.WhatsappWebhookEvents = events
+	}
 	if viper.IsSet("whatsapp_account_validation") {
 		config.WhatsappAccountValidation = viper.GetBool("whatsapp_account_validation")
+	}
+	if viper.IsSet("whatsapp_auto_reject_call") {
+		config.WhatsappAutoRejectCall = viper.GetBool("whatsapp_auto_reject_call")
+	}
+	if envPresenceOnConnect := viper.GetString("whatsapp_presence_on_connect"); envPresenceOnConnect != "" {
+		config.WhatsappPresenceOnConnect = envPresenceOnConnect
+	}
+
+	// Chatwoot settings
+	if viper.IsSet("chatwoot_enabled") {
+		config.ChatwootEnabled = viper.GetBool("chatwoot_enabled")
+	}
+	if envChatwootURL := viper.GetString("chatwoot_url"); envChatwootURL != "" {
+		config.ChatwootURL = envChatwootURL
+	}
+	if envChatwootAPIToken := viper.GetString("chatwoot_api_token"); envChatwootAPIToken != "" {
+		config.ChatwootAPIToken = envChatwootAPIToken
+	}
+	if viper.IsSet("chatwoot_account_id") {
+		config.ChatwootAccountID = viper.GetInt("chatwoot_account_id")
+	}
+	if viper.IsSet("chatwoot_inbox_id") {
+		config.ChatwootInboxID = viper.GetInt("chatwoot_inbox_id")
+	}
+	if envChatwootDeviceID := viper.GetString("chatwoot_device_id"); envChatwootDeviceID != "" {
+		config.ChatwootDeviceID = envChatwootDeviceID
+	}
+	// Chatwoot History Sync settings
+	if viper.IsSet("chatwoot_import_messages") {
+		config.ChatwootImportMessages = viper.GetBool("chatwoot_import_messages")
+	}
+	if viper.IsSet("chatwoot_days_limit_import_messages") {
+		config.ChatwootDaysLimitImportMessages = viper.GetInt("chatwoot_days_limit_import_messages")
 	}
 }
 
@@ -139,6 +182,13 @@ func initFlags() {
 		"port", "p",
 		config.AppPort,
 		"change port number with --port <number> | example: --port=8080",
+	)
+
+	rootCmd.PersistentFlags().StringVarP(
+		&config.AppHost,
+		"host", "H",
+		config.AppHost,
+		`host to bind the server --host <string> | example: --host="127.0.0.1"`,
 	)
 
 	rootCmd.PersistentFlags().BoolVarP(
@@ -223,11 +273,55 @@ func initFlags() {
 		config.WhatsappWebhookInsecureSkipVerify,
 		`skip TLS certificate verification for webhooks (INSECURE - use only for development/self-signed certs) --webhook-insecure-skip-verify <true/false> | example: --webhook-insecure-skip-verify=true`,
 	)
+	rootCmd.PersistentFlags().StringSliceVarP(
+		&config.WhatsappWebhookEvents,
+		"webhook-events", "",
+		config.WhatsappWebhookEvents,
+		`whitelist of events to forward to webhook (empty = all events) --webhook-events <string> | example: --webhook-events="message,message.ack,group.participants"`,
+	)
 	rootCmd.PersistentFlags().BoolVarP(
 		&config.WhatsappAccountValidation,
 		"account-validation", "",
 		config.WhatsappAccountValidation,
 		`enable or disable account validation --account-validation <true/false> | example: --account-validation=true`,
+	)
+	rootCmd.PersistentFlags().BoolVarP(
+		&config.WhatsappAutoRejectCall,
+		"auto-reject-call", "",
+		config.WhatsappAutoRejectCall,
+		`auto reject incoming calls --auto-reject-call <true/false> | example: --auto-reject-call=true`,
+	)
+	rootCmd.PersistentFlags().StringVarP(
+		&config.WhatsappPresenceOnConnect,
+		"presence-on-connect", "",
+		config.WhatsappPresenceOnConnect,
+		`presence to send on connect: "available", "unavailable", or "none" --presence-on-connect <string> | example: --presence-on-connect="unavailable"`,
+	)
+
+	// Chatwoot flags
+	rootCmd.PersistentFlags().BoolVarP(
+		&config.ChatwootEnabled,
+		"chatwoot-enabled", "",
+		config.ChatwootEnabled,
+		`enable Chatwoot integration --chatwoot-enabled <true/false> | example: --chatwoot-enabled=true`,
+	)
+	rootCmd.PersistentFlags().StringVarP(
+		&config.ChatwootDeviceID,
+		"chatwoot-device-id", "",
+		config.ChatwootDeviceID,
+		`device ID for Chatwoot outbound messages --chatwoot-device-id <string> | example: --chatwoot-device-id="my-device"`,
+	)
+	rootCmd.PersistentFlags().BoolVarP(
+		&config.ChatwootImportMessages,
+		"chatwoot-import-messages", "",
+		config.ChatwootImportMessages,
+		`enable message history import to Chatwoot --chatwoot-import-messages <true/false> | example: --chatwoot-import-messages=true`,
+	)
+	rootCmd.PersistentFlags().IntVarP(
+		&config.ChatwootDaysLimitImportMessages,
+		"chatwoot-days-limit-import-messages", "",
+		config.ChatwootDaysLimitImportMessages,
+		`days of message history to import to Chatwoot --chatwoot-days-limit-import-messages <int> | example: --chatwoot-days-limit-import-messages=7`,
 	)
 }
 
@@ -286,14 +380,21 @@ func initApp() {
 
 	whatsappCli = whatsapp.InitWaCLI(ctx, whatsappDB, keysDB, chatStorageRepo)
 
+	// Initialize device manager and usecase for multi-device support
+	dm := whatsapp.GetDeviceManager()
+	if dm != nil {
+		_ = dm.LoadExistingDevices(ctx)
+	}
+
 	// Usecase
-	appUsecase = usecase.NewAppService(chatStorageRepo)
+	appUsecase = usecase.NewAppService(chatStorageRepo, dm)
 	chatUsecase = usecase.NewChatService(chatStorageRepo)
 	sendUsecase = usecase.NewSendService(appUsecase, chatStorageRepo)
 	userUsecase = usecase.NewUserService()
 	messageUsecase = usecase.NewMessageService(chatStorageRepo)
 	groupUsecase = usecase.NewGroupService()
 	newsletterUsecase = usecase.NewNewsletterService()
+	deviceUsecase = usecase.NewDeviceService(dm)
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
